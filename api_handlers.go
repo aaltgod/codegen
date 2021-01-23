@@ -34,4 +34,5 @@ func (srv *OtherApi) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (srv *OtherApi) CreateWrapper(w http.ResponseWriter, r *http.Request) {
+	output := &OtherUser{}
 }
