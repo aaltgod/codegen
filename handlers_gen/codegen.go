@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"text/template"
 )
@@ -17,8 +18,9 @@ type tpl struct {
 	StructName string
 	SwitchName string
 	WrapperName string
+	Path string
+	MethodName string
 }
-
 
 var (
 	profileWrapper = "profileWrapper"
@@ -41,22 +43,17 @@ var (
 
 	srvHTTPTpl = template.Must(template.New("srvTpl").Parse(`
 // {{.StructName}}
-func (srv *{{.StructName}}) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-`))
+func (srv *{{.StructName}}) ServeHTTP(w http.ResponseWriter, r *http.Request) {`))
 
 	switchTpl = template.Must(template.New("switchTpl").Parse(`
 	// {{.SwitchName}}
-	switch r.URL.Path {
-	case "/user/profile":
-		srv.profileWrapper(w, r)
-	case "/user/create":
-		srv.createWrapper(w, r)
-	default:
-		http.Error(w, "", http.StatusBadRequest)
-	}`))
+	switch r.URL.Path {`))
+
+	caseTpl = template.Must(template.New("caseTpl").Parse(`
+	case "{{.Path}}":
+		srv.{{.MethodName}}Wrapper(w, r)`))
 
 	wrapperTpl = template.Must(template.New("wrapperTpl").Parse(`
-// {{.WrapperName}}
 func (srv *{{.StructName}}) {{.WrapperName}}(w http.ResponseWriter, r *http.Request) {
 `))
 )
@@ -70,15 +67,15 @@ func main() {
 	}
 
 	out, _ := os.Create(os.Args[2])
-	findMethods := make(map[string][]*ast.FuncDecl)
-	findStructs := make(map[string][]string)
+
 
 	fmt.Fprintln(out, `package ` + node.Name.Name)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, `import "net/http"`)
-	//fmt.Fprintln(out, `import "encoding/binary"`)
-	//fmt.Fprintln(out, `import "bytes"`)
 	fmt.Fprintln(out)
+
+	findMethods := make(map[string][]*ast.FuncDecl)
+	findStructs := make(map[string][]*ast.Field)
 
 	for _, f := range node.Decls {
 		d, ok := f.(*ast.FuncDecl)
@@ -129,8 +126,7 @@ func main() {
 							continue FIELDSLOOP
 						} else if value, exists := tag.Lookup("apivalidator"); exists {
 							log.Printf("\tTAG: %s\n", value)
-							fieldName := field.Names[0].Name
-							findStructs[structName] = append(findStructs[structName], fieldName)
+							findStructs[structName] = append(findStructs[structName], field)
 						}
 					}
 				}
@@ -146,17 +142,53 @@ func main() {
 		switchTpl.Execute(out, tpl{
 			SwitchName: structName+"Switch",
 		})
-		fmt.Fprintln(out, "\n}")
-		wrapperTpl.Execute(out, tpl{
-			WrapperName: createWrapper,
-			StructName: structName,
-		})
-		fmt.Fprintln(out, "}")
-		wrapperTpl.Execute(out, tpl{
-			WrapperName: profileWrapper,
-			StructName: structName,
-		})
+
+		for _, methodName := range methodAst {
+		FINDSTRUCTNAME:
+			for _, spec := range methodName.Recv.List{
+				switch typeOfStruct := spec.Type.(type) {
+				case *ast.StarExpr:
+					nameOfStruct := fmt.Sprintf("%s", typeOfStruct.X)
+					log.Println("NAME:", nameOfStruct)
+
+					if nameOfStruct != structName {
+						log.Println(nameOfStruct, "!=", structName)
+						continue FINDSTRUCTNAME
+					}
+
+					log.Println(nameOfStruct, "==", structName)
+					break FINDSTRUCTNAME
+				}
+			}
+
+			for _, path := range methodName.Doc.List {
+				s := regexp.MustCompile(`"/[^"]*"`).FindString(path.Text)
+				urlPath := regexp.MustCompile(`"`).Split(s, -1)
+
+				log.Println("PATH", s, urlPath[1])
+
+				caseTpl.Execute(out, tpl{
+					Path: urlPath[1],
+					MethodName: methodName.Name.Name,
+				})
+			}
+		}
+		fmt.Fprintln(out, "\n	default:")
+		fmt.Fprintln(out, `		http.Error(w, "", http.StatusBadRequest)`)
+		fmt.Fprintln(out, "	}")
 		fmt.Fprintln(out, "}")
 
+		for _, methodName := range methodAst {
+			wrapperTpl.Execute(out, tpl{
+				WrapperName: methodName.Name.Name+"Wrapper",
+				StructName: structName,
+			})
+
+			for name, info := range findStructs {
+				log.Println(name, info)
+			}
+
+			fmt.Fprintln(out, "}")
+		}
 	}
 }
