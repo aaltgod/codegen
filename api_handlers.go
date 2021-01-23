@@ -1,28 +1,48 @@
 package main
 
 import "net/http"
-import "encoding/binary"
-import "bytes"
 
 
-	// URL
-	var URLRaw uint32
-	binary.Read(reader, binary.LittleEndian, &URLRaw)
-	srv.URL = int(URLRaw)
-
-	// Query
-	var QueryLenRaw uint32
-	binary.Read(reader, binary.LittleEndian, &QueryLenRaw)
-	QueryRaw := make([]byte, QueryLenRaw)
-	binary.Read(reader, binary.LittleEndian, QueryRaw)
-	srv.Query = string(QueryRaw)
+// MyApi
 func (srv *MyApi) ServeHTTP(w http.ResponseWriter, r *http.Request) {
- reader := bytes.NewReader(r)
+
+	// MyApiSwitch
+	switch r.URL.Path {
+	case "/user/profile":
+		srv.profileWrapper(w, r)
+	case "/user/create":
+		srv.createWrapper(w, r)
+	default:
+		http.Error(w, "", http.StatusBadRequest)
+	}
 }
-func (srv *MyApi) ServeHTTP(w http.ResponseWriter, r *http.Request) {
- reader := bytes.NewReader(r)
+
+// createWrapper
+func (srv *MyApi) createWrapper(w http.ResponseWriter, r *http.Request) {
 }
+
+// profileWrapper
+func (srv *MyApi) profileWrapper(w http.ResponseWriter, r *http.Request) {
+}
+
+// OtherApi
 func (srv *OtherApi) ServeHTTP(w http.ResponseWriter, r *http.Request) {
- reader := bytes.NewReader(r)
+
+	// OtherApiSwitch
+	switch r.URL.Path {
+	case "/user/profile":
+		srv.profileWrapper(w, r)
+	case "/user/create":
+		srv.createWrapper(w, r)
+	default:
+		http.Error(w, "", http.StatusBadRequest)
+	}
 }
+
+// createWrapper
+func (srv *OtherApi) createWrapper(w http.ResponseWriter, r *http.Request) {
+}
+
+// profileWrapper
+func (srv *OtherApi) profileWrapper(w http.ResponseWriter, r *http.Request) {
 }
