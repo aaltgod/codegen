@@ -60,6 +60,15 @@ func (srv *{{.StructName}}) {{.WrapperName}}(w http.ResponseWriter, r *http.Requ
 `))
 	paramTpl = template.Must(template.New("paramTpl").Parse(`
 	{{.ParamName}} := r.URL.Query().Get("Param")`))
+
+	checkRequestMethod = template.Must(template.New("checkRequestMethod").Parse(`
+func checkRequestMethod(availableMethod string, w http.ResponseWriter, r *http.Request) {
+	if availableMethod == r.Method || availableMethod == "" {
+		return
+	}
+
+	http.Error(w, "bad method", 406)
+}`))
 )
 
 func getMethodsAndStructs(node *ast.File, findMethods map[string][]*ast.FuncDecl, findStructs map[string][]*ast.Field) {
@@ -134,6 +143,20 @@ func getURLFromComments(methodName *ast.FuncDecl) string {
 	return url
 }
 
+func getRequestMethod(methodName *ast.FuncDecl) string {
+	comments := methodName.Doc.Text()
+	matched, _ := regexp.MatchString(`"method": "[A-Z]*"`, comments)
+	if !matched {
+		return ""
+	}
+
+	s := regexp.MustCompile(`"method": "[A-Z]*"`).FindString(comments)
+	method := regexp.MustCompile(`"`).Split(s, -1)[3]
+	log.Println("METHHOD:", method)
+
+	return method
+}
+
 
 func main() {
 
@@ -186,7 +209,7 @@ func main() {
 		}
 
 		fmt.Fprintln(out, "\n	default:")
-		fmt.Fprintln(out, `		http.Error(w, "", http.StatusBadRequest)`)
+		fmt.Fprintln(out, `		http.Error(w, "", 404)`)
 		fmt.Fprintln(out, "	}\n}")
 
 		for _, methodName := range methodAst {
@@ -194,6 +217,14 @@ func main() {
 				WrapperName: methodName.Name.Name+"Wrapper",
 				StructName: structName,
 			})
+
+			log.Println("COMMENT:", methodName.Doc.Text())
+
+			requestMethod := getRequestMethod(methodName)
+
+			log.Println("REQUEST METHOD:", requestMethod)
+
+			fmt.Fprintln(out, `	checkRequestMethod("`+requestMethod+`", w, r)`)
 
 			for _, res := range methodName.Type.Results.List{
 				switch resType := res.Type.(type) {
@@ -207,18 +238,26 @@ func main() {
 						}
 
 						for _, field := range fields {
-							log.Println("FIELD:", field.Names[0])
-						}
+							fieldName := field.Names[0]
+							log.Println("FIELD:", fieldName)
 
+							tag := reflect.StructTag(field.Tag.Value[1:len(field.Tag.Value)-1]).Get("json")
+							log.Println("TAG:", tag)
+
+							switch fieldType := field.Type.(type) {
+							case *ast.Ident:
+								log.Println("TYPE:", fieldType.Name)
+							}
+						}
 					}
 				}
 			}
 
 
-
-			log.Println(len(findStructs))
-
 			fmt.Fprintln(out, "}")
 		}
+
 	}
+	checkRequestMethod.Execute(out, tpl{})
+
 }
