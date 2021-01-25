@@ -1,6 +1,8 @@
 package main
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+)
 import "bytes"
 
 func (in *User) Unpack(data []byte) error {

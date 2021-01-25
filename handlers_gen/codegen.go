@@ -49,46 +49,104 @@ func (srv *{{.StructName}}) {{.WrapperName}}(w http.ResponseWriter, r *http.Requ
 	output.{{.ParamName}} = r.FormValue("{{.Param}}")`))
 
 	paramIntTpl = template.Must(template.New("paramIntTpl").Parse(`
-	output.{{.ParamName}}, _ = strconv.Atoi(r.FormValue("{{.Param}}"))`))
+	var err error	
+	output.{{.ParamName}}, err = strconv.Atoi(r.FormValue("{{.Param}}"))
+	if err != nil {
+		response, _ := json.Marshal(&Response{
+			"error": "{{.Param}} must be int",
+		})
+
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(response)
+		
+		return
+	}`))
 
 	checkRequestMethod = template.Must(template.New("checkRequestMethod").Parse(`
-func checkRequestMethod(availableMethod string, w http.ResponseWriter, r *http.Request) {
+func checkRequestMethod(availableMethod string, r *http.Request) error {
 	if availableMethod == r.Method || availableMethod == "" {
-		return
+		return nil
 	}
+	
+	return fmt.Errorf("%s", "bad method")
+}
+`))
 
-	http.Error(w, "bad method", 406)
-}`))
+	checkAuth = template.Must(template.New("checkAuth").Parse(`
+func checkAuth(r *http.Request) error {
+	auth := r.Header.Get("X-Auth")
+	if auth == "100500" {
+		return nil
+	}
+	
+	return fmt.Errorf("%s", "unauthorized")
+}
+`))
 
 	checkForRequestParamTpl = template.Must(template.New("checkForRequestParamTpl").Parse(`
 	if output.{{.ParamName}} == "" {
-		http.Error(w, "{{.Param}} must me not empty", 400)
+		response, _ := json.Marshal(&Response{
+			"error": "{{.Param}} must me not empty",
+		})
+
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(response)
+
 		return
-	}`))
+	}
+`))
 
 	checkForMinimumLenTpl = template.Must(template.New("checkForMinimumLenTpl").Parse(`
 	if len(output.{{.ParamName}}) < {{.Min}} {
-		http.Error(w, "{{.Param}} len must be >= {{.Min}}", 400)
+		response, _ := json.Marshal(&Response{
+			"error": "{{.Param}} len must be >= {{.Min}}",
+		})
+
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(response)
+
 		return
-	}`))
+	}
+`))
 
 	checkForMinimumNumberTpl = template.Must(template.New("checkForMinimumNumberTpl").Parse(`
 	if output.{{.ParamName}} < {{.Min}} {
-		http.Error(w, "{{.Param}} must be >= {{.Min}}", 400)
+		response, _ := json.Marshal(&Response{
+			"error": "{{.Param}} must be >= {{.Min}}",
+		})
+
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(response)
+		
 		return
-	}`))
+	}
+`))
 
 	checkForMaximumLenTpl = template.Must(template.New("checkForMaximumLenTpl").Parse(`
 	if len(output.{{.ParamName}}) > {{.Max}} {
-		http.Error(w, "{{.Param}} len must be <= {{.Min}}", 400)
+		response, _ := json.Marshal(&Response{
+			"error": "{{.Param}} len must be <= {{.Min}}",
+		})
+
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(response)
+		
 		return
-	}`))
+	}
+`))
 
 	checkForMaximumNumberTpl = template.Must(template.New("checkForMaximumNumberTpl").Parse(`
 	if output.{{.ParamName}} > {{.Max}} {
-		http.Error(w, "{{.Param}} must be <= {{.Max}}", 400)
+		response, _ := json.Marshal(&Response{
+			"error": "{{.Param}} must be <= {{.Max}}",
+		})
+
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(response)
+
 		return
-	}`))
+	}
+`))
 
 	enumSwitchTpl = template.Must(template.New("enumSwitchTpl").Parse(`
 	if output.{{.ParamName}} != "" {
@@ -100,13 +158,52 @@ func checkRequestMethod(availableMethod string, w http.ResponseWriter, r *http.R
 
 	enumDefaultTpl = template.Must(template.New("enumDefaultTpl").Parse(`
 		default:
-			http.Error(w, "{{.Param}} must be one of {{.Enums}}", 400)
+			response, _ := json.Marshal(&Response{
+			"error": "{{.Param}} must be one of {{.Enums}}",
+			})
+
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write(response)
+
 			return
 		}
 	} else {
 		output.{{.ParamName}} = "{{.Dflt}}"
-	}`))
-	)
+	}
+`))
+
+	resultTpl = template.Must(template.New("resultTpl").Parse(`
+	res, err := srv.{{.MethodName}}(r.Context(), output)
+	if err != nil {
+		switch err.(type) {
+		case ApiError:
+			err := err.(ApiError)
+			response, _ := json.Marshal(&Response{
+			"error": err.Error(),
+			})
+
+			w.WriteHeader(err.HTTPStatus)
+			w.Write(response)
+		case error:
+			response, _ := json.Marshal(&Response{
+			"error": err.Error(),
+			})
+
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write(response)
+		}
+		
+		return
+	}
+
+	response, _ := json.Marshal(&Response{
+		"error": "",
+		"response": res, 
+	})
+
+	w.Write(response)
+`))
+)
 
 func getMethodsAndStructs(node *ast.File, findMethods map[string][]*ast.FuncDecl, findStructs map[string][]*ast.Field) {
 	for _, f := range node.Decls {
@@ -189,11 +286,24 @@ func getRequestMethod(methodName *ast.FuncDecl) string {
 
 	s := regexp.MustCompile(`"method": "[A-Z]*"`).FindString(comments)
 	method := regexp.MustCompile(`"`).Split(s, -1)[3]
-	log.Println("METHHOD:", method)
 
 	return method
 }
 
+func isAuth(methodName *ast.FuncDecl) bool {
+	comments := methodName.Doc.Text()
+	s := regexp.MustCompile(`"auth": [a-z]*`).FindString(comments)
+	auth := regexp.MustCompile(`: `).Split(s, -1)[1]
+	switch auth {
+	case "true":
+		return true
+	case "false":
+		return false
+	default:
+		log.Fatalln("Error auth")
+		return false
+	}
+}
 
 func main() {
 
@@ -208,7 +318,11 @@ func main() {
 	fmt.Fprintln(out, `package ` + node.Name.Name)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, `import "net/http"`)
+	fmt.Fprintln(out, `import "fmt"`)
 	fmt.Fprintln(out, `import "strconv"`)
+	fmt.Fprintln(out, `import "encoding/json"`)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, `type Response map[string]interface{}`)
 	fmt.Fprintln(out)
 
 	findMethods := make(map[string][]*ast.FuncDecl)
@@ -246,7 +360,11 @@ func main() {
 		}
 
 		fmt.Fprintln(out, "\n	default:")
-		fmt.Fprintln(out, `		http.Error(w, "", 404)`)
+		fmt.Fprintln(out, `		response, _ := json.Marshal(&Response{`)
+		fmt.Fprintln(out,`			"error": "unknown method",`)
+		fmt.Fprintln(out, `		})`)
+		fmt.Fprintln(out,`		w.WriteHeader(http.StatusNotFound)`)
+		fmt.Fprintln(out, `		w.Write(response)`)
 		fmt.Fprintln(out, `		return`)
 		fmt.Fprintln(out, "	}\n}")
 
@@ -256,12 +374,29 @@ func main() {
 				StructName: structName,
 			})
 
-			log.Println("COMMENT:", methodName.Doc.Text())
-
 			requestMethod := getRequestMethod(methodName)
-			fmt.Fprintln(out, `	checkRequestMethod("`+requestMethod+`", w, r)`)
-			fmt.Fprintln(out)
+			fmt.Fprintln(out, `	if err := checkRequestMethod("`+requestMethod+`", r); err != nil {`)
+			fmt.Fprintln(out,`		response, _ := json.Marshal(&Response{`)
+			fmt.Fprintln(out, `				"error": err.Error(),`)
+			fmt.Fprintln(out, `		})`)
+			fmt.Fprintln(out, `		w.WriteHeader(http.StatusNotAcceptable)`)
+			fmt.Fprintln(out, `		w.Write(response)`)
+			fmt.Fprintln(out, `		return`)
+			fmt.Fprintln(out, `	}`)
 
+			if isAuth(methodName){
+				fmt.Fprintln(out, `	if err := checkAuth(r); err != nil {`)
+				fmt.Fprintln(out, `		response, _ := json.Marshal(&Response{`)
+				fmt.Fprintln(out, `			"error": err.Error(),`)
+				fmt.Fprintln(out, `		})`)
+
+				fmt.Fprintln(out, `		w.WriteHeader(http.StatusForbidden)`)
+				fmt.Fprintln(out, `		w.Write(response)`)
+				fmt.Fprintln(out, `		return`)
+				fmt.Fprintln(out, `	}`)
+
+			}
+			fmt.Fprintln(out)
 
 			for _, param := range methodName.Type.Params.List{
 				paramName := fmt.Sprintf("%s", param.Type)
@@ -272,15 +407,11 @@ func main() {
 						continue
 					}
 
-					fmt.Fprintln(out, "	output := &" + paramName + "{}")
+					fmt.Fprintln(out, "	output := " + paramName + "{}")
 
 					for _, field := range fields {
 						fieldName := field.Names[0].Name
-						log.Println("FIELD:", fieldName)
-
 						tag := reflect.StructTag(field.Tag.Value[1:len(field.Tag.Value)-1]).Get("apivalidator")
-						log.Println("TAG:", tag)
-
 						lowCaseFieldName := strings.ToLower(fieldName)
 						matched, _ := regexp.MatchString("paramname=", tag)
 						if matched {
@@ -304,8 +435,7 @@ func main() {
 
 						}
 
-
-						matched, _ = regexp.MatchString("required=", tag)
+						matched, _ = regexp.MatchString("required", tag)
 						if matched {
 							checkForRequestParamTpl.Execute(out, tpl{
 								ParamName: fieldName,
@@ -327,9 +457,9 @@ func main() {
 								})
 							case "int":
 								checkForMinimumNumberTpl.Execute(out, tpl{
-								ParamName: fieldName,
-								Param:     lowCaseFieldName,
-								Min:       min,
+									ParamName: fieldName,
+									Param:     lowCaseFieldName,
+									Min:       min,
 								})
 
 							}
@@ -366,9 +496,6 @@ func main() {
 
 							s := regexp.MustCompile(`enum=[^,]*`).FindString(tag)
 							unparsedEnums := regexp.MustCompile("=").Split(s, -1)[1]
-							log.Println("unparsedEnum:", unparsedEnums)
-
-
 							enums := regexp.MustCompile("[|]").Split(unparsedEnums, -1)
 							for _, enum := range enums {
 								enumCaseTpl.Execute(out, tpl{
@@ -376,15 +503,9 @@ func main() {
 								})
 							}
 
-							log.Println("ENUM:", enums)
-
 							joinedEnums := "[" + strings.Join(enums, ", ") + "]"
-
 							s = regexp.MustCompile(`default=[^,]*`).FindString(tag)
 							dflt := regexp.MustCompile("=").Split(s, -1)[1]
-
-							log.Println("DFLT:", dflt)
-
 							enumDefaultTpl.Execute(out, tpl{
 								ParamName: fieldName,
 								Param: lowCaseFieldName,
@@ -395,10 +516,12 @@ func main() {
 					}
 				}
 			}
+			resultTpl.Execute(out, tpl{
+				MethodName: methodName.Name.Name,
+			})
 			fmt.Fprintln(out, "\n}")
 		}
-
 	}
 	checkRequestMethod.Execute(out, tpl{})
-
+	checkAuth.Execute(out, tpl{})
 }

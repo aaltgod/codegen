@@ -337,7 +337,7 @@ func runTests(t *testing.T, ts *httptest.Server, cases []Case) {
 		json.Unmarshal(data, &expected)
 
 		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("[%d] results not match\nGot: %#v\nExpected: %#v", idx, result, item.Result)
+			t.Errorf("[%d] results not match\nGot: %v\nExpected: %v", idx, result, item.Result)
 			continue
 		}
 	}
